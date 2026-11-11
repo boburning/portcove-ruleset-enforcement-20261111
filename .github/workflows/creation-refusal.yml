@@ -1,0 +1,41 @@
+name: Controller tag creation refusal
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - name: Verify the ruleset denies an otherwise capable writer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'boburning/portcove-ruleset-enforcement-20261111' ]]
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          post_ref() {
+            jq -n --arg ref "$1" --arg sha "$GITHUB_SHA" '{ref:$ref,sha:$sha}' |
+              curl --silent --show-error --max-time 20 --output "$response" --write-out '%{http_code}' \
+                --request POST --header 'Accept: application/vnd.github+json' \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                --header 'Content-Type: application/json' --data-binary @- \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs"
+          }
+          control='refs/tags/disposable-write-permission-proof'
+          [[ "$(post_ref "$control")" == 201 ]]
+          jq -e --arg ref "$control" --arg sha "$GITHUB_SHA" \
+            '.ref==$ref and .object.type=="commit" and .object.sha==$sha' "$response" >/dev/null
+          echo "Token created the unprotected control tag at the intended commit."
+          restricted='refs/tags/portcove-controller-canary-20261111-creation-refusal'
+          status="$(post_ref "$restricted")"
+          jq -c '{message,documentation_url}' "$response"
+          [[ "$status" == 403 || "$status" == 422 ]]
+          jq -e '.message|test("GH013|rule violations|creations being restricted";"i")' "$response" >/dev/null
+          echo "GitHub rejected the protected tag creation with HTTP $status."
